@@ -208,6 +208,7 @@ def reparse_sleep(verbose=True):
     conn.close()
     done = 0
     failed = []
+    deltas = {}
     for r in rows:
         try:
             obj = zepp_decode.summary_json(r["raw_summary"])
@@ -216,13 +217,24 @@ def reparse_sleep(verbose=True):
                 continue
             zepp_db.save_sleep(r["date"], slp, r["raw_summary"])
             done += 1
+            c = zepp_decode.sleep_consistency(slp)
+            if c.get("checked"):
+                deltas[c["delta_min"]] = deltas.get(c["delta_min"], 0) + 1
         except Exception as e:
             failed.append((r["date"], type(e).__name__ + ": " + str(e)[:70]))
     if verbose:
         print("Re-parsed %d of %d nights from stored payloads" % (done, len(rows)))
+        # Stages and timestamps are independent records of the same night. If
+        # they disagree, the stage reader is wrong.
+        exact = deltas.get(0, 0)
+        print("  stage sum vs time in bed: %d of %d nights account exactly"
+              % (exact, sum(deltas.values())))
+        for delta in sorted(deltas, key=lambda k: -deltas[k])[:6]:
+            if delta != 0:
+                print("    off by %+d min on %d nights" % (delta, deltas[delta]))
         for day, err in failed[:10]:
             print("  FAILED %s: %s" % (day, err))
-    return {"reparsed": done, "failed": failed}
+    return {"reparsed": done, "failed": failed, "deltas": deltas}
 
 
 def _print_summary(w, d, elapsed, calls):

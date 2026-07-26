@@ -113,18 +113,23 @@ def stream_stats(samples):
 def stage_durations(stages):
     """Total minutes per stage mode.
 
-    start/stop are minutes of day, so a night that crosses midnight has
-    stop < start. Those wrap forward rather than counting as negative time.
+    start/stop are INCLUSIVE minute-of-day indices, so a segment covers
+    stop - start + 1 minutes. Verified against the app on two nights: a
+    00:25-00:59 deep segment is reported as 35 minutes, not 34, and summing a
+    night with no wake time reproduces the in-bed elapsed time exactly. Plain
+    subtraction undercounts by one minute per segment, which is 20-35 minutes
+    over a full night.
+
+    A night crossing midnight has stop < start; those wrap forward rather than
+    counting as negative time.
     """
     totals = {}
     for st in stages:
-        start = st["start"]
-        stop = st["stop"]
-        mins = stop - start
+        mins = st["stop"] - st["start"]
         if mins < 0:
             mins = mins + MINUTES_PER_DAY
         mode = st.get("mode")
-        totals[mode] = totals.get(mode, 0) + mins
+        totals[mode] = totals.get(mode, 0) + mins + 1
     return totals
 
 
@@ -164,6 +169,30 @@ def sleep_summary(stages):
     out["total_min"] = light + deep + rem
     out["unknown_modes"] = dict((m, v) for m, v in totals.items()
                                 if m not in _KNOWN_STAGES)
+    return out
+
+
+def sleep_consistency(slp):
+    """Cross-check the stage list against the recorded start and end times.
+
+    Two independent sources for the same night: the stages, and st/ed. Summed
+    stages must account for the whole time in bed. This invariant is what caught
+    the inclusive-bounds off-by-one -- worth keeping, because a decoder that
+    silently loses a minute per segment looks perfectly reasonable otherwise.
+    """
+    st = slp.get("st")
+    ed = slp.get("ed")
+    s = sleep_summary(slp.get("stage") or [])
+    if st is None or ed is None:
+        return {"checked": False}
+    elapsed = int(round((int(ed) - int(st)) / 60.0))
+    accounted = (s["total_min"] + s["awake_min"]
+                 + sum(s["unknown_modes"].values()))
+    out = {}
+    out["checked"] = True
+    out["elapsed_min"] = elapsed
+    out["accounted_min"] = accounted
+    out["delta_min"] = accounted - elapsed
     return out
 
 
@@ -233,27 +262,47 @@ def _selftest():
     assert stream_stats([])["count"] == 0
 
     # stage durations, including a night that crosses midnight
-    stages = [{"start": 1380, "stop": 1440, "mode": 5},   # 23:00-00:00, 60
-              {"start": 0, "stop": 90, "mode": 5},        # 00:00-01:30, 90
-              {"start": 90, "stop": 120, "mode": 4},      # 30
-              {"start": 1400, "stop": 20, "mode": 8}]     # wraps midnight, 60
+    stages = [{"start": 1380, "stop": 1440, "mode": 5},   # inclusive, so 61
+              {"start": 0, "stop": 90, "mode": 5},        # 91
+              {"start": 90, "stop": 120, "mode": 4},      # 31
+              {"start": 1400, "stop": 20, "mode": 8}]     # wraps midnight, 61
     d = stage_durations(stages)
-    assert d == {5: 150, 4: 30, 8: 60}, d
+    assert d == {5: 152, 4: 31, 8: 61}, d
+
+    # Ground truth from the app for the night ending 2026-07-26: these two deep
+    # segments are reported as 35 and 11 minutes, not 34 and 10.
+    assert stage_durations([{"start": 25, "stop": 59, "mode": STAGE_DEEP}]) \
+        == {STAGE_DEEP: 35}
+    assert stage_durations([{"start": 122, "stop": 132, "mode": STAGE_DEEP}]) \
+        == {STAGE_DEEP: 11}
+    # A one-minute waking is stored as start == stop. Subtracting gives 0 and
+    # loses the event entirely; the app and Zepp's own wk field both say 1.
+    assert stage_durations([{"start": 275, "stop": 275, "mode": STAGE_AWAKE}]) \
+        == {STAGE_AWAKE: 1}
 
     # sleep_summary derives phases from stages, not from dp + lb
     real = [{"start": 0, "stop": 300, "mode": STAGE_LIGHT},
-            {"start": 300, "stop": 360, "mode": STAGE_DEEP},
-            {"start": 360, "stop": 400, "mode": STAGE_REM},
-            {"start": 400, "stop": 410, "mode": STAGE_AWAKE},
-            {"start": 410, "stop": 420, "mode": 99}]
+            {"start": 301, "stop": 360, "mode": STAGE_DEEP},
+            {"start": 361, "stop": 400, "mode": STAGE_REM},
+            {"start": 401, "stop": 410, "mode": STAGE_AWAKE},
+            {"start": 411, "stop": 420, "mode": 99}]
     ss = sleep_summary(real)
-    assert ss["light_min"] == 300 and ss["deep_min"] == 60, ss
+    assert ss["light_min"] == 301 and ss["deep_min"] == 60, ss
     assert ss["rem_min"] == 40 and ss["awake_min"] == 10, ss
-    assert ss["total_min"] == 400, ss           # asleep, excludes the 10 awake
+    assert ss["total_min"] == 401, ss           # asleep, excludes the 10 awake
     assert ss["unknown_modes"] == {99: 10}, ss   # surfaced, not silently folded in
     assert sleep_summary([])["total_min"] == 0
 
-    m = match_stage_modes({"dp": 150, "lb": 30, "stage": stages})
+    # contiguous segments must account for exactly the time in bed
+    base = 1784500000
+    cons = sleep_consistency({"st": base, "ed": base + 421 * 60, "stage": real})
+    assert cons["delta_min"] == 0, cons
+    # the old subtracting decoder would have lost a minute per segment
+    assert cons["accounted_min"] == 421, cons
+    # and a decoder that lost a minute per segment would show up here
+    assert sleep_consistency({"stage": real})["checked"] is False
+
+    m = match_stage_modes({"dp": 152, "lb": 31, "stage": stages})
     assert m["deep_mode"] == 5 and m["light_mode"] == 4, m
     # no stages means no guess, rather than a confident wrong answer
     assert match_stage_modes({"dp": 150})["deep_mode"] is None
