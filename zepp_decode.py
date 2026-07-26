@@ -128,6 +128,45 @@ def stage_durations(stages):
     return totals
 
 
+# Stage mode codes, resolved empirically over 732 nights rather than guessed.
+# mode 5 totals 59.9 min/night against a reported dp of 63.7 (6% off), and mode
+# 7 totals 9.7 against a reported wk of 10.8 (10% off). Mode 4 dominates at
+# 293.3 min/night and mode 8 sits at 36.9, which is the shape of light sleep and
+# REM respectively. Sum: ~390 min, a realistic night.
+STAGE_LIGHT = 4
+STAGE_DEEP = 5
+STAGE_AWAKE = 7
+STAGE_REM = 8
+
+_KNOWN_STAGES = (STAGE_LIGHT, STAGE_DEEP, STAGE_AWAKE, STAGE_REM)
+
+
+def sleep_summary(stages):
+    """Minutes per sleep phase, summed from the stage list.
+
+    Derived from the stages, never from dp + lb. The brief takes `lb` to be
+    light-sleep minutes, and it is not: lb averages 2.9 min/night across this
+    account, which cannot be light sleep when mode 4 alone averages 293. Its
+    real meaning is still unknown, so it is stored raw and not interpreted.
+
+    total_min excludes awake time, so it is time asleep rather than time in bed.
+    """
+    totals = stage_durations(stages)
+    light = totals.get(STAGE_LIGHT, 0)
+    deep = totals.get(STAGE_DEEP, 0)
+    rem = totals.get(STAGE_REM, 0)
+    awake = totals.get(STAGE_AWAKE, 0)
+    out = {}
+    out["light_min"] = light
+    out["deep_min"] = deep
+    out["rem_min"] = rem
+    out["awake_min"] = awake
+    out["total_min"] = light + deep + rem
+    out["unknown_modes"] = dict((m, v) for m, v in totals.items()
+                                if m not in _KNOWN_STAGES)
+    return out
+
+
 def match_stage_modes(slp):
     """Work out which stage mode means deep and which means light.
 
@@ -200,6 +239,19 @@ def _selftest():
               {"start": 1400, "stop": 20, "mode": 8}]     # wraps midnight, 60
     d = stage_durations(stages)
     assert d == {5: 150, 4: 30, 8: 60}, d
+
+    # sleep_summary derives phases from stages, not from dp + lb
+    real = [{"start": 0, "stop": 300, "mode": STAGE_LIGHT},
+            {"start": 300, "stop": 360, "mode": STAGE_DEEP},
+            {"start": 360, "stop": 400, "mode": STAGE_REM},
+            {"start": 400, "stop": 410, "mode": STAGE_AWAKE},
+            {"start": 410, "stop": 420, "mode": 99}]
+    ss = sleep_summary(real)
+    assert ss["light_min"] == 300 and ss["deep_min"] == 60, ss
+    assert ss["rem_min"] == 40 and ss["awake_min"] == 10, ss
+    assert ss["total_min"] == 400, ss           # asleep, excludes the 10 awake
+    assert ss["unknown_modes"] == {99: 10}, ss   # surfaced, not silently folded in
+    assert sleep_summary([])["total_min"] == 0
 
     m = match_stage_modes({"dp": 150, "lb": 30, "stage": stages})
     assert m["deep_mode"] == 5 and m["light_mode"] == 4, m

@@ -149,9 +149,18 @@ def connect():
     return conn
 
 
+def _migrate(conn):
+    """Additive column migrations. SQLite has no ADD COLUMN IF NOT EXISTS."""
+    cols = set(r[1] for r in conn.execute("PRAGMA table_info(zepp_sleep)"))
+    for name in ("rem_min", "awake_min", "reported_dp", "reported_lb"):
+        if name not in cols:
+            conn.execute("ALTER TABLE zepp_sleep ADD COLUMN " + name + " INTEGER")
+
+
 def init():
     conn = connect()
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     conn.close()
 
@@ -264,16 +273,27 @@ def save_daily(date, stp, hr, raw_summary):
 
 
 def save_sleep(date, slp, raw_summary):
+    """One night. Phase minutes come from the stages, not from dp + lb.
+
+    The reported dp and lb are kept alongside so the two can be compared: dp
+    tracks the summed mode-5 stages to within a few percent, while lb does not
+    correspond to light sleep at all and is stored uninterpreted.
+    """
+    import zepp_decode
     slp = slp or {}
     stages = slp.get("stage") or []
-    total = (slp.get("dp") or 0) + (slp.get("lb") or 0)
-    row = (date, slp.get("st"), slp.get("ed"), slp.get("dp"), slp.get("lb"),
-           slp.get("wk"), slp.get("wc"), total,
+    s = zepp_decode.sleep_summary(stages)
+    row = (date, _int(slp.get("st")), _int(slp.get("ed")),
+           s["deep_min"], s["light_min"], s["rem_min"], s["awake_min"],
+           _int(slp.get("wk")), _int(slp.get("wc")), s["total_min"],
+           _int(slp.get("dp")), _int(slp.get("lb")),
            json.dumps(stages, default=str), raw_summary)
     conn = connect()
     conn.execute("INSERT OR REPLACE INTO zepp_sleep (date, start_ts, end_ts, "
-                 "deep_min, light_min, wake_min, wake_count, total_min, "
-                 "stages_json, raw_summary) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
+                 "deep_min, light_min, rem_min, awake_min, wake_min, "
+                 "wake_count, total_min, reported_dp, reported_lb, "
+                 "stages_json, raw_summary) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
     conn.commit()
     conn.close()
     return date

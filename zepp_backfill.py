@@ -195,6 +195,36 @@ def sync_daily(z, start, end, verbose=True):
     return out
 
 
+def reparse_sleep(verbose=True):
+    """Recompute sleep phases from stored payloads. Zero API calls.
+
+    This is why every table keeps its raw payload. Correcting how the stage
+    modes are read cost one local pass over 904 stored summaries instead of
+    another 75 paced requests.
+    """
+    conn = zepp_db.connect()
+    rows = conn.execute("SELECT date, raw_summary FROM zepp_sleep "
+                        "WHERE raw_summary != ''").fetchall()
+    conn.close()
+    done = 0
+    failed = []
+    for r in rows:
+        try:
+            obj = zepp_decode.summary_json(r["raw_summary"])
+            slp = obj.get("slp") or {}
+            if not slp:
+                continue
+            zepp_db.save_sleep(r["date"], slp, r["raw_summary"])
+            done += 1
+        except Exception as e:
+            failed.append((r["date"], type(e).__name__ + ": " + str(e)[:70]))
+    if verbose:
+        print("Re-parsed %d of %d nights from stored payloads" % (done, len(rows)))
+        for day, err in failed[:10]:
+            print("  FAILED %s: %s" % (day, err))
+    return {"reparsed": done, "failed": failed}
+
+
 def _print_summary(w, d, elapsed, calls):
     print()
     print("=" * 62)
@@ -238,6 +268,10 @@ def main(argv):
 
     if "--report" in argv:
         zepp_db.report()
+        return 0
+
+    if "--reparse-sleep" in argv:
+        reparse_sleep()
         return 0
 
     try:
