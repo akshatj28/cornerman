@@ -167,6 +167,10 @@ analysis.py           e1RM, trend, outlier rejection, goal projection
 tools.py              Read-only SQL, coach memory, trusted functions
 llm.py                OpenRouter client, retries, model fallback
 dump.py               Whole database as compact text
+zepp_decode.py        Zepp base64 and delta-stream decoders
+zepp_db.py            Zepp schema and writers
+zepp_client.py        Zepp API client
+zepp_backfill.py      Zepp backfill and incremental sync
 goal.py               Your standing goal          (gitignored)
 persona.py            How the coach writes
 run_cycle.py          Prompt assembly and response
