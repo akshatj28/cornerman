@@ -1,11 +1,63 @@
-"""One full cycle: new workouts and replies."""
+"""One full cycle: new workouts and replies. Adaptive polling."""
 import sys
+import os
+import time
 import traceback
+from datetime import datetime
 import db
 import convo
 import secrets_cm as creds
 from read_inbox import fetch_raw, mark_read
 from run_cycle import respond, strip_quotes
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(HERE, "last_activity.txt")
+LOCK_FILE = os.path.join(HERE, "cornerman.lock")
+
+SUBJECT = "Between rounds"
+ACTIVE_WINDOW_MIN = 20      # poll every minute for this long after activity
+IDLE_INTERVAL_MIN = 10      # otherwise only on these minutes
+LOCK_STALE_MIN = 30         # assume a lock older than this is dead
+
+
+def mark_activity():
+    with open(STATE_FILE, "w") as f:
+        f.write(str(time.time()))
+
+
+def minutes_since_activity():
+    try:
+        with open(STATE_FILE) as f:
+            return (time.time() - float(f.read().strip())) / 60.0
+    except Exception:
+        return 99999.0
+
+
+def should_run_now():
+    since = minutes_since_activity()
+    if since < ACTIVE_WINDOW_MIN:
+        return True, "active, " + str(int(since)) + "m since last exchange"
+    if datetime.now().minute % IDLE_INTERVAL_MIN == 0:
+        return True, "idle poll"
+    return False, "skip"
+
+
+def acquire_lock():
+    if os.path.exists(LOCK_FILE):
+        age = (time.time() - os.path.getmtime(LOCK_FILE)) / 60.0
+        if age < LOCK_STALE_MIN:
+            return False
+        os.remove(LOCK_FILE)
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    return True
+
+
+def release_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
 
 
 def from_me(sender):
@@ -25,9 +77,10 @@ def handle_workout(item, verbose):
     task = ("TASK: He just logged this session: " + w["title"]
             + " on " + str(w["start_time"])
             + ". Write his post-workout message.")
-    sent = respond(task, "Cornerman", verbose=verbose)
+    sent = respond(task, SUBJECT, verbose=verbose)
     if sent:
-        convo.log("in", item["body"], subject=item["subject"], msg_id=item.get("rfc_id"))
+        convo.log("in", item["body"], subject=item["subject"],
+                  msg_id=item.get("rfc_id"))
         mark_read(item["id"])
         return 1
     if verbose:
@@ -39,13 +92,14 @@ def handle_reply(item, verbose):
     text = strip_quotes(item["body"])
     if not text:
         return 0
-    convo.log("in", text, subject=item["subject"], msg_id=item.get("rfc_id"))
     if verbose:
         print("  reply:", text[:60])
     task = ("TASK: He just replied to you. His message:\n\n" + text
             + "\n\nAnswer him directly. Same rules apply.")
-    sent = respond(task, "Cornerman", verbose=verbose)
+    sent = respond(task, SUBJECT, verbose=verbose)
     if sent:
+        convo.log("in", text, subject=item["subject"],
+                  msg_id=item.get("rfc_id"))
         mark_read(item["id"])
         return 1
     if verbose:
@@ -67,12 +121,24 @@ def cycle(verbose=True):
             n = n + handle_reply(item, verbose)
         elif verbose:
             print("  ignored:", item["subject"][:40])
+    if n > 0:
+        mark_activity()
     return n
 
 
 if __name__ == "__main__":
+    ok, why = should_run_now()
+    if not ok:
+        sys.exit(0)
+    if not acquire_lock():
+        print(datetime.now().strftime("%H:%M"), "| still running, skipping")
+        sys.exit(0)
     try:
-        print("Handled:", cycle(verbose=True))
+        print("===", datetime.now().strftime("%Y-%m-%d %H:%M"), "|", why, "===")
+        n = cycle(verbose=True)
+        print("Handled:", n)
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        release_lock()
