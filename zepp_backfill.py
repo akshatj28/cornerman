@@ -16,6 +16,7 @@ Usage:
     python3 zepp_backfill.py --daily --since DATE days only, from DATE
     python3 zepp_backfill.py --sync               incremental, for cron
     python3 zepp_backfill.py --report             what is stored now
+    python3 zepp_backfill.py --rebuild-context    minute-level context, no calls
 """
 import json
 import sys
@@ -237,6 +238,122 @@ def reparse_sleep(verbose=True):
     return {"reparsed": done, "failed": failed, "deltas": deltas}
 
 
+def _workout_minutes():
+    """(date, minute) -> activity_id for every minute inside a logged workout."""
+    conn = zepp_db.connect()
+    rows = conn.execute("SELECT activity_id, start_time, duration_s "
+                        "FROM zepp_workout WHERE start_time IS NOT NULL").fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        try:
+            a = datetime.fromisoformat(r["start_time"])
+        except (TypeError, ValueError):
+            continue
+        for k in range(int(r["duration_s"] or 0) // 60 + 1):
+            t = a + timedelta(minutes=k)
+            out[(t.date().isoformat(), t.hour * 60 + t.minute)] = r["activity_id"]
+    return out
+
+
+def rebuild_context(verbose=True):
+    """Rebuild the segment tables and the minute-level context. No API calls.
+
+    Precedence when sources overlap: a logged workout wins, then sleep, then an
+    activity block, then idle. Overlaps are recorded in `conflict` rather than
+    quietly resolved, so they stay countable.
+    """
+    zepp_db.init()
+    wmin = _workout_minutes()
+
+    conn = zepp_db.connect()
+    days = conn.execute("SELECT date, raw_summary FROM zepp_daily "
+                        "WHERE raw_summary != '' ORDER BY date").fetchall()
+    conn.close()
+
+    n_blocks = n_stages = n_minutes = 0
+    ctx_counts = {}
+    conflicts = 0
+    failed = []
+
+    for row in days:
+        date = row["date"]
+        try:
+            obj = zepp_decode.summary_json(row["raw_summary"])
+        except Exception as e:
+            failed.append((date, type(e).__name__ + ": " + str(e)[:60]))
+            continue
+
+        blocks = zepp_decode.activity_blocks(obj.get("stp") or {})
+        stages = zepp_decode.sleep_stages(obj.get("slp") or {})
+        n_blocks += zepp_db.save_activity_blocks(date, blocks)
+        n_stages += zepp_db.save_sleep_stages(date, stages)
+
+        # per-minute step and mode attribution, spread evenly across the block
+        step_at = {}
+        mode_at = {}
+        for b in blocks:
+            per = b["steps"] / float(b["minutes"]) if b["minutes"] else 0.0
+            for m in zepp_decode.expand_minutes(b["start_min"], b["minutes"]):
+                step_at[m] = step_at.get(m, 0.0) + per
+                mode_at[m] = b["mode"]
+
+        phase_at = {}
+        for s in stages:
+            for m in zepp_decode.expand_minutes(s["start_min"], s["minutes"]):
+                phase_at[m] = s["phase"]
+
+        conn = zepp_db.connect()
+        hr = dict((r["minute"], r["bpm"]) for r in conn.execute(
+            "SELECT minute, bpm FROM zepp_daily_hr WHERE date = ?", (date,)))
+        conn.close()
+
+        every = set(hr) | set(step_at) | set(phase_at)
+        every |= set(m for (d, m) in wmin if d == date)
+
+        rows = []
+        for m in sorted(every):
+            wid = wmin.get((date, m))
+            phase = phase_at.get(m)
+            steps = step_at.get(m, 0.0)
+            mode = mode_at.get(m)
+            # overlapping sources are worth knowing about
+            clash = 1 if (wid and phase) or (phase and steps >= 40) else 0
+            if wid:
+                ctx = "workout"
+            elif phase:
+                ctx = "asleep_" + phase
+            elif steps >= 60:
+                ctx = "walk_brisk"
+            elif steps >= 20:
+                ctx = "walk_slow"
+            elif steps > 0:
+                ctx = "incidental"
+            else:
+                ctx = "awake_idle"
+            ctx_counts[ctx] = ctx_counts.get(ctx, 0) + 1
+            conflicts += clash
+            rows.append({"minute": m, "bpm": hr.get(m), "context": ctx,
+                         "steps": round(steps, 2) if steps else 0.0,
+                         "activity_mode": mode, "sleep_phase": phase,
+                         "workout_id": wid, "conflict": clash})
+        n_minutes += zepp_db.save_minutes(date, rows)
+
+    if verbose:
+        print("Rebuilt from stored payloads, no API calls:")
+        print("  activity blocks : %d" % n_blocks)
+        print("  sleep stages    : %d" % n_stages)
+        print("  context minutes : %d" % n_minutes)
+        print("  overlapping-source minutes flagged: %d" % conflicts)
+        print("  minutes by context:")
+        for k in sorted(ctx_counts, key=lambda x: -ctx_counts[x]):
+            print("    %-14s %8d" % (k, ctx_counts[k]))
+        for day, err in failed[:8]:
+            print("  FAILED %s: %s" % (day, err))
+    return {"blocks": n_blocks, "stages": n_stages, "minutes": n_minutes,
+            "contexts": ctx_counts, "conflicts": conflicts, "failed": failed}
+
+
 def _print_summary(w, d, elapsed, calls):
     print()
     print("=" * 62)
@@ -284,6 +401,10 @@ def main(argv):
 
     if "--reparse-sleep" in argv:
         reparse_sleep()
+        return 0
+
+    if "--rebuild-context" in argv:
+        rebuild_context()
         return 0
 
     try:

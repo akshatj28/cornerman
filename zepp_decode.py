@@ -172,6 +172,77 @@ def sleep_summary(stages):
     return out
 
 
+# Activity block modes, labelled by measured cadence rather than guessed, the
+# same way the sleep modes were resolved. Across 8,968 blocks:
+#   mode 7   12.9 steps/min   incidental movement
+#   mode 1   41.8 steps/min   slow walk
+#   mode 3   94.7 steps/min   brisk walk
+#   mode 4  148.2 steps/min   running (matches the ~150 cadence on GPS runs)
+ACTIVITY_MODES = {7: "incidental", 1: "walk_slow", 3: "walk_brisk", 4: "running"}
+
+
+def activity_blocks(stp):
+    """Timestamped activity blocks for one day, out of the `stp` object.
+
+    Each block carries its own steps, distance and calories over a minute range.
+    Collapsing them to a daily total throws away the timing, and the timing is
+    what makes heart rate interpretable: an elevated evening average means
+    nothing until you can see that the evening is when the walking happens.
+    """
+    out = []
+    for b in (stp.get("stage") or []):
+        start = b.get("start")
+        stop = b.get("stop")
+        if start is None or stop is None:
+            continue
+        mins = stop - start
+        if mins < 0:
+            mins = mins + MINUTES_PER_DAY
+        mins = mins + 1                      # inclusive bounds, as with sleep
+        mode = b.get("mode")
+        steps = b.get("step") or 0
+        rec = {}
+        rec["start_min"] = start
+        rec["stop_min"] = stop
+        rec["minutes"] = mins
+        rec["mode"] = mode
+        rec["mode_label"] = ACTIVITY_MODES.get(mode, "mode_" + str(mode))
+        rec["steps"] = steps
+        rec["distance_m"] = b.get("dis")
+        rec["calories"] = b.get("cal")
+        rec["steps_per_min"] = round(steps / float(mins), 1) if mins else 0.0
+        out.append(rec)
+    out.sort(key=lambda r: r["start_min"])
+    return out
+
+
+def sleep_stages(slp):
+    """Sleep segments for one night, flattened for storage one row per segment."""
+    out = []
+    for s in (slp.get("stage") or []):
+        start = s.get("start")
+        stop = s.get("stop")
+        if start is None or stop is None:
+            continue
+        mins = stop - start
+        if mins < 0:
+            mins = mins + MINUTES_PER_DAY
+        mins = mins + 1
+        mode = s.get("mode")
+        phase = {STAGE_LIGHT: "light", STAGE_DEEP: "deep",
+                 STAGE_REM: "rem", STAGE_AWAKE: "awake"}.get(mode,
+                                                             "mode_" + str(mode))
+        out.append({"start_min": start, "stop_min": stop, "minutes": mins,
+                    "mode": mode, "phase": phase})
+    out.sort(key=lambda r: r["start_min"])
+    return out
+
+
+def expand_minutes(start_min, minutes):
+    """Minute-of-day indices a segment covers, wrapping past midnight."""
+    return [(start_min + k) % MINUTES_PER_DAY for k in range(minutes)]
+
+
 def sleep_consistency(slp):
     """Cross-check the stage list against the recorded start and end times.
 
@@ -304,6 +375,27 @@ def _selftest():
 
     m = match_stage_modes({"dp": 152, "lb": 31, "stage": stages})
     assert m["deep_mode"] == 5 and m["light_mode"] == 4, m
+
+    # activity blocks: inclusive minutes, cadence, and midnight wrap
+    blocks = activity_blocks({"stage": [
+        {"start": 1267, "stop": 1311, "mode": 3, "step": 4393, "dis": 3309, "cal": 170},
+        {"start": 1430, "stop": 9, "mode": 1, "step": 400, "dis": 300, "cal": 20}]})
+    assert blocks[0]["minutes"] == 45, blocks[0]        # 1311 - 1267 + 1
+    assert blocks[0]["steps_per_min"] == 97.6, blocks[0]
+    assert blocks[0]["mode_label"] == "walk_brisk", blocks[0]
+    assert blocks[1]["minutes"] == 20, blocks[1]        # wraps midnight
+    assert blocks[1]["mode_label"] == "walk_slow", blocks[1]
+    assert activity_blocks({}) == []
+    # an unrecognised mode is labelled, not silently dropped
+    assert activity_blocks({"stage": [{"start": 0, "stop": 5, "mode": 42,
+                                       "step": 10}]})[0]["mode_label"] == "mode_42"
+
+    st2 = sleep_stages({"stage": real})
+    assert [s["phase"] for s in st2] == ["light", "deep", "rem", "awake", "mode_99"], st2
+    assert sum(s["minutes"] for s in st2) == 421, st2
+
+    assert expand_minutes(1438, 4) == [1438, 1439, 0, 1]
+
     # no stages means no guess, rather than a confident wrong answer
     assert match_stage_modes({"dp": 150})["deep_mode"] is None
 

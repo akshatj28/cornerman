@@ -104,6 +104,54 @@ CREATE TABLE IF NOT EXISTS zepp_daily (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS zepp_activity_block (
+    date        TEXT    NOT NULL,
+    start_min   INTEGER NOT NULL,
+    stop_min    INTEGER NOT NULL,
+    minutes     INTEGER NOT NULL,
+    mode        INTEGER,
+    mode_label  TEXT,
+    steps       INTEGER,
+    distance_m  REAL,
+    calories    REAL,
+    steps_per_min REAL,
+    PRIMARY KEY (date, start_min)
+);
+
+CREATE INDEX IF NOT EXISTS ix_actblock_mode ON zepp_activity_block(mode_label);
+
+CREATE TABLE IF NOT EXISTS zepp_sleep_stage (
+    date      TEXT    NOT NULL,
+    start_min INTEGER NOT NULL,
+    stop_min  INTEGER NOT NULL,
+    minutes   INTEGER NOT NULL,
+    mode      INTEGER,
+    phase     TEXT,
+    PRIMARY KEY (date, start_min)
+);
+
+CREATE INDEX IF NOT EXISTS ix_sleepstage_phase ON zepp_sleep_stage(phase);
+
+-- One row per observed minute, with heart rate sitting next to what was
+-- happening. Derived entirely from the tables above, so it can be rebuilt at
+-- any time and never needs a re-download. Exists because an hourly heart-rate
+-- average is uninterpretable on its own: the evening looks elevated only
+-- because the evening is when the walking happens.
+CREATE TABLE IF NOT EXISTS zepp_minute (
+    date          TEXT    NOT NULL,
+    minute        INTEGER NOT NULL,
+    bpm           INTEGER,
+    context       TEXT    NOT NULL,
+    steps         REAL,
+    activity_mode INTEGER,
+    sleep_phase   TEXT,
+    workout_id    TEXT,
+    conflict      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (date, minute)
+);
+
+CREATE INDEX IF NOT EXISTS ix_minute_context ON zepp_minute(context);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key        TEXT PRIMARY KEY,
     value      TEXT,
@@ -297,6 +345,57 @@ def save_sleep(date, slp, raw_summary):
     conn.commit()
     conn.close()
     return date
+
+
+def save_activity_blocks(date, blocks):
+    if not blocks:
+        return 0
+    conn = connect()
+    conn.execute("DELETE FROM zepp_activity_block WHERE date = ?", (date,))
+    conn.executemany(
+        "INSERT OR REPLACE INTO zepp_activity_block (date, start_min, stop_min, "
+        "minutes, mode, mode_label, steps, distance_m, calories, steps_per_min) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [(date, b["start_min"], b["stop_min"], b["minutes"], b["mode"],
+          b["mode_label"], b["steps"], b["distance_m"], b["calories"],
+          b["steps_per_min"]) for b in blocks])
+    conn.commit()
+    conn.close()
+    return len(blocks)
+
+
+def save_sleep_stages(date, stages):
+    if not stages:
+        return 0
+    conn = connect()
+    conn.execute("DELETE FROM zepp_sleep_stage WHERE date = ?", (date,))
+    conn.executemany(
+        "INSERT OR REPLACE INTO zepp_sleep_stage (date, start_min, stop_min, "
+        "minutes, mode, phase) VALUES (?,?,?,?,?,?)",
+        [(date, s["start_min"], s["stop_min"], s["minutes"], s["mode"],
+          s["phase"]) for s in stages])
+    conn.commit()
+    conn.close()
+    return len(stages)
+
+
+def save_minutes(date, rows):
+    """rows: list of dicts with minute, bpm, context, steps, activity_mode,
+    sleep_phase, workout_id, conflict."""
+    if not rows:
+        return 0
+    conn = connect()
+    conn.execute("DELETE FROM zepp_minute WHERE date = ?", (date,))
+    conn.executemany(
+        "INSERT OR REPLACE INTO zepp_minute (date, minute, bpm, context, steps, "
+        "activity_mode, sleep_phase, workout_id, conflict) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        [(date, r["minute"], r["bpm"], r["context"], r["steps"],
+          r["activity_mode"], r["sleep_phase"], r["workout_id"],
+          r["conflict"]) for r in rows])
+    conn.commit()
+    conn.close()
+    return len(rows)
 
 
 def get_state(key, default=None):
