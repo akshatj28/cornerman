@@ -112,6 +112,37 @@ CREATE TABLE IF NOT EXISTS sync_state (
 """
 
 
+def _num(v):
+    """Coerce a Zepp field to a number, or None.
+
+    The API is inconsistent about types: on one real record trackid, dis,
+    run_time, calorie, avg_heart_rate and avg_pace all arrive as strings while
+    type, max_heart_rate and total_step arrive as ints. Anything doing
+    arithmetic on these fields has to coerce first or it hits a TypeError on the
+    first live row.
+    """
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v):
+    f = _num(v)
+    return None if f is None else int(f)
+
+
+def _opt(v):
+    """Same as _num, but -1 is Zepp's "not measured" sentinel, not a value.
+
+    Storing -1 would let a missing VO2_max drag an average downwards.
+    """
+    f = _num(v)
+    return None if f is None or f == -1 else f
+
+
 def connect():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -133,10 +164,10 @@ def classify(rec):
     resting. A 162-minute "workout" at HR 74 would otherwise corrupt any
     training-load figure.
     """
-    t = rec.get("type")
+    t = _int(rec.get("type"))
     label, detail_free, suspect = SPORT_TYPES.get(t, ("Unknown type " + str(t), 0, 0))
-    avg = rec.get("avg_heart_rate") or 0
-    mx = rec.get("max_heart_rate") or 0
+    avg = _num(rec.get("avg_heart_rate")) or 0
+    mx = _num(rec.get("max_heart_rate")) or 0
     if mx == 0 or mx < 90 or (mx - avg) < 5:
         suspect = 1
     return label, detail_free, suspect
@@ -155,20 +186,20 @@ def save_workout(rec, source, activity_id, start_time, raw_json=None):
         "source": source,
         "activity_id": str(activity_id),
         "start_time": start_time,
-        "type": rec.get("type"),
+        "type": _int(rec.get("type")),
         "type_label": label,
-        "distance_m": rec.get("dis"),
-        "duration_s": rec.get("run_time"),
-        "calorie": rec.get("calorie"),
-        "avg_heart_rate": rec.get("avg_heart_rate"),
-        "max_heart_rate": rec.get("max_heart_rate"),
-        "total_step": rec.get("total_step"),
-        "avg_pace": rec.get("avg_pace"),
-        "vo2_max": rec.get("VO2_max"),
-        "te": rec.get("te"),
-        "anaerobic_te": rec.get("anaerobic_te"),
-        "exercise_load": rec.get("exercise_load"),
-        "rpe": rec.get("rpe"),
+        "distance_m": _num(rec.get("dis")),
+        "duration_s": _int(rec.get("run_time")),
+        "calorie": _num(rec.get("calorie")),
+        "avg_heart_rate": _int(rec.get("avg_heart_rate")),
+        "max_heart_rate": _int(rec.get("max_heart_rate")),
+        "total_step": _int(rec.get("total_step")),
+        "avg_pace": _num(rec.get("avg_pace")),
+        "vo2_max": _opt(rec.get("VO2_max")),
+        "te": _opt(rec.get("te")),
+        "anaerobic_te": _opt(rec.get("anaerobic_te")),
+        "exercise_load": _opt(rec.get("exercise_load")),
+        "rpe": _opt(rec.get("rpe")),
         "deviceid": rec.get("deviceid"),
         "sn": rec.get("sn"),
         "detail_free": detail_free,

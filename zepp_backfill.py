@@ -134,7 +134,7 @@ def sync_workouts(z, verbose=True, detail=True, resume=True):
             out["streams"] += 1
             # The brief's integrity check: stream span must equal run_time.
             span = hr[-1][0]
-            rt = rec.get("run_time") or 0
+            rt = zepp_db._int(rec.get("run_time")) or 0   # arrives as a string
             if rt and abs(span - rt) > SPAN_TOLERANCE:
                 out["span_mismatch"].append((tid, span, rt))
         if verbose and out["streams"] % 10 == 0 and hr:

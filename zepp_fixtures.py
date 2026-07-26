@@ -26,9 +26,20 @@ DAY_EXPECT = {"count": 1278, "min": 48, "max": 123,
 TOL = 0.051      # means are rounded to one decimal; counts must be exact
 
 
+def _as_num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _check(label, got, want, results):
-    if isinstance(want, float):
-        ok = got is not None and abs(got - want) <= TOL
+    # Compare numerically whenever both sides are numbers. The API hands back
+    # run_time as the string "2858", which must not read as a mismatch against
+    # the integer 2858.
+    g, w = _as_num(got), _as_num(want)
+    if g is not None and w is not None:
+        ok = abs(g - w) <= TOL
     else:
         ok = got == want
     results.append(ok)
