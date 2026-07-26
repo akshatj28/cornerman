@@ -140,8 +140,14 @@ Gmail needs 2-Step Verification enabled and an [app password](https://myaccount.
 To run it unattended, add to cron:
 
 ```
-*/10 * * * * /path/to/cornerman/cron.sh >> /path/to/cornerman/cron.log 2>&1
+* * * * * /path/to/cornerman/cron.sh >> /path/to/cornerman/cron.log 2>&1
 ```
+
+Every minute is deliberate. Cron only wakes the daemon; `daemon.py` decides
+whether the cycle actually runs — every minute for 20 minutes after an
+exchange, then every tenth minute once things go quiet. Schedule it as `*/10`
+and the active window can never fire, because cron would never invoke it on the
+intervening minutes.
 
 ### Sending workouts from your phone
 
@@ -166,6 +172,7 @@ persona.py            How the coach writes
 run_cycle.py          Prompt assembly and response
 daemon.py             The cycle cron runs
 cron.sh               Wrapper with venv activation
+deploy.sh             Pull, activate venv, smoke-test imports
 import_csv.py         One-time history backfill
 docs/                 Build log and architecture explainers
 ```
