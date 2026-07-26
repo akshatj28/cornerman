@@ -1,0 +1,10 @@
+secrets_cm.py
+goal.py
+*.db
+*.db-wal
+*.db-shm
+*.csv
+*.log
+.venv/
+__pycache__/
+*.pyc
