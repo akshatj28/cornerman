@@ -80,6 +80,127 @@ def alert_token_expired(err):
         print("  could not email alert: " + str(e)[:120])   # the original cause
 
 
+STALE_HOURS = 36        # two missed runs of a twice-daily sync
+NO_DATA_DAYS = 3        # sync succeeding but Zepp has nothing new
+REALERT_HOURS = 24      # do not nag more than once a day
+
+
+def check_freshness(now=None, send_alert=True, verbose=False):
+    """Notice silence.
+
+    alert_token_expired only fires when the sync runs and is refused. It cannot
+    fire when the sync never runs at all -- a lost crontab, a missing venv, a
+    reboot -- or when the API answers happily but the watch stopped syncing to
+    Zepp. Those are the failures that stay invisible, so something has to watch
+    for absence rather than for errors.
+
+    Called from the coach's daemon on purpose: it is a separate process on a
+    separate schedule, so it still runs when the Zepp sync is the thing that
+    is broken.
+    """
+    now = now or datetime.now()
+    last = zepp_db.get_state("zepp_last_sync")
+    token = zepp_db.get_state("zepp_token_status") or "unknown"
+
+    conn = zepp_db.connect()
+    newest = conn.execute("SELECT MAX(date) FROM zepp_daily").fetchone()[0]
+    conn.close()
+
+    hours = None
+    if last:
+        try:
+            hours = (now - datetime.fromisoformat(last)).total_seconds() / 3600.0
+        except ValueError:
+            hours = None
+    data_age = None
+    if newest:
+        try:
+            data_age = (now.date() - date.fromisoformat(newest)).days
+        except ValueError:
+            data_age = None
+
+    kind = None
+    if token == "expired":
+        kind = "token"
+    elif hours is None or hours > STALE_HOURS:
+        kind = "not_running"
+    elif data_age is not None and data_age > NO_DATA_DAYS:
+        kind = "no_new_data"
+
+    out = {"kind": kind, "hours_since_sync": hours, "data_age_days": data_age,
+           "token_status": token, "newest_date": newest, "alerted": False}
+
+    if kind is None:
+        # recovered: clear the flag so the next real problem alerts immediately
+        if zepp_db.get_state("zepp_stale_alerted_at"):
+            zepp_db.set_state("zepp_stale_alerted_at", "")
+            zepp_db.set_state("zepp_stale_kind", "")
+            if verbose:
+                print("  zepp sync healthy again, alert flag cleared")
+        return out
+
+    prev_at = zepp_db.get_state("zepp_stale_alerted_at")
+    prev_kind = zepp_db.get_state("zepp_stale_kind")
+    due = True
+    if prev_at and prev_kind == kind:
+        try:
+            due = (now - datetime.fromisoformat(prev_at)).total_seconds() / 3600.0 >= REALERT_HOURS
+        except ValueError:
+            due = True
+    if not (send_alert and due):
+        return out
+
+    hrs = "unknown" if hours is None else "%.0f" % hours
+    if kind == "token":
+        subject = "Cornerman: Zepp token expired"
+        body = ("The Zepp sync is refused -- the app_token is no longer valid.\n\n"
+                "To fix it:\n"
+                "  1. Log in at https://watchface.zepp.com/ in a desktop browser.\n"
+                "  2. DevTools > Application > Cookies > copy hm-user-login-info.\n"
+                "  3. URL-decode it and take token_info.app_token.\n"
+                "  4. Put it in secrets_cm.py as ZEPP_TOKEN.\n"
+                "  5. Close the tab. Do NOT click log out -- that voids the token.\n\n"
+                "Then run: python3 zepp_backfill.py --check\n\n"
+                "Nothing was lost. Zepp does not expire data, so the sync picks up\n"
+                "from where it stopped.\n")
+    elif kind == "not_running":
+        subject = "Cornerman: Zepp sync has stopped running"
+        body = ("The Zepp sync has not completed for " + hrs + " hours. It runs at\n"
+                "09:17 and 21:47, so this means it is not starting at all rather\n"
+                "than failing partway.\n\n"
+                "Check, in this order:\n"
+                "  crontab -l                     is the entry still there\n"
+                "  tail -40 zepp_cron.log         did it start and die\n"
+                "  ls -l .venv/bin/python3        is the venv intact\n"
+                "  df -h /                        is the disk full\n"
+                "  ./zepp_cron.sh                 run it by hand\n\n"
+                "Newest day stored: " + str(newest) + "\n"
+                "Nothing is lost -- Zepp keeps everything, so a catch-up run\n"
+                "collects whatever was missed.\n")
+    else:
+        subject = "Cornerman: Zepp has no new data"
+        body = ("The Zepp sync is running fine (last completed " + hrs + " hours ago,\n"
+                "token is valid) but the newest day stored is " + str(newest) + ", which is\n"
+                + str(data_age) + " days old.\n\n"
+                "So the fault is upstream of this system: the watch is most likely\n"
+                "not syncing to your phone. Open the Zepp app, let it sync, and the\n"
+                "next run will collect the backlog.\n")
+
+    try:
+        import mailer
+        mailer.send(subject, body)
+        out["alerted"] = True
+        zepp_db.set_state("zepp_stale_alerted_at", now.isoformat(timespec="seconds"))
+        zepp_db.set_state("zepp_stale_kind", kind)
+        if verbose:
+            print("  zepp watchdog: alerted (" + kind + ")")
+    except Exception as e:
+        # An alert that cannot be delivered must not take the caller down.
+        if verbose:
+            print("  zepp watchdog: could not email (" + str(e)[:90] + ")")
+    return out
+
+
 def sync_workouts(z, verbose=True, detail=True, resume=True):
     """History, then streams. Returns a counts dict."""
     recs = z.workout_history()
@@ -406,6 +527,19 @@ def main(argv):
     if "--rebuild-context" in argv:
         rebuild_context()
         return 0
+
+    if "--health" in argv:
+        h = check_freshness(send_alert="--alert" in argv, verbose=True)
+        print("Zepp sync health")
+        print("  problem          : %s" % (h["kind"] or "none"))
+        print("  token status     : %s" % h["token_status"])
+        print("  hours since sync : %s"
+              % ("unknown" if h["hours_since_sync"] is None
+                 else "%.1f" % h["hours_since_sync"]))
+        print("  newest day       : %s (%s days old)"
+              % (h["newest_date"], h["data_age_days"]))
+        print("  alert sent       : %s" % h["alerted"])
+        return 0 if h["kind"] is None else 1
 
     try:
         z = Zepp()

@@ -107,9 +107,31 @@ def handle_reply(item, verbose):
     return 0
 
 
+def zepp_watchdog(verbose=True):
+    """Notice if the Zepp sync has gone quiet, and say so.
+
+    Runs here rather than inside the sync because a process cannot report its
+    own absence. The coach's cycle is on a separate schedule, so it still runs
+    when the Zepp sync is the broken thing.
+
+    Deliberately swallows everything: the coach must not stop working because
+    the watchdog does.
+    """
+    try:
+        import zepp_backfill
+        h = zepp_backfill.check_freshness(verbose=verbose)
+        if h["kind"] and verbose:
+            print("  zepp watchdog:", h["kind"],
+                  "(alerted)" if h["alerted"] else "(already alerted)")
+    except Exception as e:
+        if verbose:
+            print("  zepp watchdog skipped:", str(e)[:100])
+
+
 def cycle(verbose=True):
     db.init()
     convo.init()
+    zepp_watchdog(verbose=verbose)
     items = fetch_raw(search="UNSEEN", peek=True)
     if verbose:
         print("Unread messages:", len(items))
