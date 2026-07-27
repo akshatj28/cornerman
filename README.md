@@ -145,7 +145,7 @@ To run it unattended, add to cron:
 
 Every minute is deliberate. Cron only wakes the daemon; `daemon.py` decides
 whether the cycle actually runs — every minute for 20 minutes after an
-exchange, then every tenth minute once things go quiet. Schedule it as `*/10`
+exchange, then every third minute once things go quiet. Schedule it as `*/3`
 and the active window can never fire, because cron would never invoke it on the
 intervening minutes.
 

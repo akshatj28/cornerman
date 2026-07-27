@@ -16,7 +16,8 @@ LOCK_FILE = os.path.join(HERE, "cornerman.lock")
 
 SUBJECT = "Between rounds"
 ACTIVE_WINDOW_MIN = 20      # poll every minute for this long after activity
-IDLE_INTERVAL_MIN = 10      # otherwise only on these minutes
+IDLE_INTERVAL_MIN = 3       # otherwise only on these minutes. 60 divides by 3,
+                            # so the cadence stays even across hour boundaries.
 LOCK_STALE_MIN = 30         # assume a lock older than this is dead
 
 

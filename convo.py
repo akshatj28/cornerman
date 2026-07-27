@@ -6,7 +6,7 @@ DB_PATH = Path(__file__).resolve().parent / "cornerman.db"
 
 
 def init():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     q = ("CREATE TABLE IF NOT EXISTS messages ("
          "id INTEGER PRIMARY KEY AUTOINCREMENT, "
          "direction TEXT NOT NULL, "
@@ -20,7 +20,7 @@ def init():
 
 def log(direction, body, subject=None, msg_id=None):
     init()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     q = ("INSERT INTO messages (direction, subject, body, msg_id) "
          "VALUES (?,?,?,?)")
     conn.execute(q, (direction, subject, body, msg_id))
@@ -30,7 +30,7 @@ def log(direction, body, subject=None, msg_id=None):
 
 def recent(n=30):
     init()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     q = ("SELECT direction, body, created_at FROM messages "
          "ORDER BY id DESC LIMIT ?")
@@ -59,7 +59,7 @@ if __name__ == "__main__":
 
 def last_msg_id():
     init()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     q = ("SELECT msg_id FROM messages WHERE msg_id IS NOT NULL "
          "ORDER BY id DESC LIMIT 1")
     r = conn.execute(q).fetchone()
@@ -69,7 +69,7 @@ def last_msg_id():
 
 def root_msg_id():
     init()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     q = ("SELECT msg_id FROM messages WHERE msg_id IS NOT NULL "
          "ORDER BY id ASC LIMIT 1")
     r = conn.execute(q).fetchone()

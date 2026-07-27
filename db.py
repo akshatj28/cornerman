@@ -39,7 +39,10 @@ CREATE TABLE IF NOT EXISTS goals (
 
 
 def connect():
-    conn = sqlite3.connect(DB_PATH)
+    # 30s to match zepp_db. The Zepp sync writes in short per-day bursts, so
+    # the default 5s would very likely have been fine -- but polling three
+    # times as often means three times as many chances to find out.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn

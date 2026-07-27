@@ -31,7 +31,7 @@ def run_sql(query):
 
 
 def init_notes():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     q = ("CREATE TABLE IF NOT EXISTS coach_notes ("
          "id INTEGER PRIMARY KEY AUTOINCREMENT, "
          "kind TEXT, note TEXT NOT NULL, "
@@ -43,7 +43,7 @@ def init_notes():
 
 def remember(note, kind="observation"):
     init_notes()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("INSERT INTO coach_notes (kind, note) VALUES (?,?)", (kind, note))
     conn.commit()
     conn.close()
