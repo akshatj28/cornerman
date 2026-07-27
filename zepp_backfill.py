@@ -85,7 +85,7 @@ NO_DATA_DAYS = 3        # sync succeeding but Zepp has nothing new
 REALERT_HOURS = 24      # do not nag more than once a day
 
 
-def check_freshness(now=None, send_alert=True, verbose=False):
+def check_freshness(now=None, send_alert=True, verbose=False, heartbeat=False):
     """Notice silence.
 
     alert_token_expired only fires when the sync runs and is refused. It cannot
@@ -99,10 +99,12 @@ def check_freshness(now=None, send_alert=True, verbose=False):
     is broken.
     """
     now = now or datetime.now()
-    # Heartbeat first, unconditionally. A healthy watchdog says nothing, so
-    # without this there is no way to tell "ran and found nothing wrong" from
-    # "stopped running" -- the caller swallows exceptions by design.
-    zepp_db.set_state("zepp_watchdog_ran", now.isoformat(timespec="seconds"))
+    # Only the scheduled caller stamps the heartbeat. Inspecting it must not
+    # write it: --health calls this function too, and a diagnostic that
+    # overwrites the value it reports cannot tell "the daemon ran" from
+    # "somebody just looked".
+    if heartbeat:
+        zepp_db.set_state("zepp_watchdog_ran", now.isoformat(timespec="seconds"))
     last = zepp_db.get_state("zepp_last_sync")
     token = zepp_db.get_state("zepp_token_status") or "unknown"
 
@@ -542,8 +544,16 @@ def main(argv):
                  else "%.1f" % h["hours_since_sync"]))
         print("  newest day       : %s (%s days old)"
               % (h["newest_date"], h["data_age_days"]))
-        print("  watchdog last ran: %s  (daemon writes this every cycle)"
-              % zepp_db.get_state("zepp_watchdog_ran"))
+        hb = zepp_db.get_state("zepp_watchdog_ran")
+        age = ""
+        if hb:
+            try:
+                mins = (datetime.now() - datetime.fromisoformat(hb)).total_seconds() / 60.0
+                age = "  (%.0f min ago)" % mins
+            except ValueError:
+                pass
+        print("  watchdog last ran: %s%s  <- written only by the daemon"
+              % (hb or "never", age))
         print("  alert sent       : %s" % h["alerted"])
         return 0 if h["kind"] is None else 1
 

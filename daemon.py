@@ -119,7 +119,7 @@ def zepp_watchdog(verbose=True):
     """
     try:
         import zepp_backfill
-        h = zepp_backfill.check_freshness(verbose=verbose)
+        h = zepp_backfill.check_freshness(verbose=verbose, heartbeat=True)
         if h["kind"] and verbose:
             print("  zepp watchdog:", h["kind"],
                   "(alerted)" if h["alerted"] else "(already alerted)")
