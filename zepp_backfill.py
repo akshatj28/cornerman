@@ -99,6 +99,10 @@ def check_freshness(now=None, send_alert=True, verbose=False):
     is broken.
     """
     now = now or datetime.now()
+    # Heartbeat first, unconditionally. A healthy watchdog says nothing, so
+    # without this there is no way to tell "ran and found nothing wrong" from
+    # "stopped running" -- the caller swallows exceptions by design.
+    zepp_db.set_state("zepp_watchdog_ran", now.isoformat(timespec="seconds"))
     last = zepp_db.get_state("zepp_last_sync")
     token = zepp_db.get_state("zepp_token_status") or "unknown"
 
@@ -538,6 +542,8 @@ def main(argv):
                  else "%.1f" % h["hours_since_sync"]))
         print("  newest day       : %s (%s days old)"
               % (h["newest_date"], h["data_age_days"]))
+        print("  watchdog last ran: %s  (daemon writes this every cycle)"
+              % zepp_db.get_state("zepp_watchdog_ran"))
         print("  alert sent       : %s" % h["alerted"])
         return 0 if h["kind"] is None else 1
 
