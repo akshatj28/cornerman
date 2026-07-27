@@ -171,6 +171,8 @@ zepp_decode.py        Zepp base64 and delta-stream decoders
 zepp_db.py            Zepp schema and writers
 zepp_client.py        Zepp API client
 zepp_backfill.py      Zepp backfill and incremental sync
+zepp_fixtures.py      Live regression fixtures for the Zepp decoders
+zepp_cron.sh          Unattended Zepp sync wrapper
 goal.py               Your standing goal          (gitignored)
 persona.py            How the coach writes
 run_cycle.py          Prompt assembly and response

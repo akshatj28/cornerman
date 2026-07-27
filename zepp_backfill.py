@@ -466,6 +466,15 @@ def main(argv):
     zepp_db.set_state("zepp_token_status", "ok")
     zepp_db.set_state("zepp_last_sync", datetime.now().isoformat(timespec="seconds"))
     _print_summary(w, d, time.time() - t0, z.calls)
+
+    # The segment and minute tables are derived, so a sync without a rebuild
+    # leaves them behind by however much just arrived. Doing it here rather than
+    # leaving it to whoever remembers -- that drift has already happened once.
+    if "--no-context" not in argv:
+        print()
+        rebuild_context()
+        zepp_db.set_state("zepp_context_rebuilt",
+                          datetime.now().isoformat(timespec="seconds"))
     return 0
 
 

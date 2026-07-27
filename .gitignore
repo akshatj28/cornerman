@@ -9,4 +9,4 @@ goal.py
 __pycache__/
 *.pyc
 last_activity.txt
-cornerman.lock
+*.lock
